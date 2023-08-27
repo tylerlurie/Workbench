@@ -1,0 +1,3 @@
+rem Saves the original power plan to Task Sequence Variable 'PowerPlan'
+rem Can revert to this when Task Sequence is near completion.
+powershell.exe -ExecutionPolicy Bypass -Command "& {(New-Object -COMObject Microsoft.SMS.TSEnvironment).Value('PowerPlan') = (Get-WmiObject -Class win32_powerplan -Namespace root\cimv2\power -Filter {isActive='true'} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty InstanceID | Out-String) -Split "{" -Replace "}" | Select-Object -Last 1}"
