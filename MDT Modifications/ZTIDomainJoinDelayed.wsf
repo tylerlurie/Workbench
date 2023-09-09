@@ -1,4 +1,4 @@
-<job id="ZTIDomainJoin">
+<job id="ZTIDomainJoinDelayed">
 	<script language="VBScript" src="ZTIUtility.vbs"/>
 	<script language="VBScript">
 
@@ -8,13 +8,13 @@
 ' // 
 ' // Microsoft Deployment Toolkit Solution Accelerator
 ' //
-' // File:      ZTIDomainJoin.wsf
+' // File:      ZTIDomainJoinDelayed.wsf
 ' // 
 ' // Version:   6.3.8456.1000
 ' // 
 ' // Purpose:   During "State Restore" phase, will verify and recover Domain Join
 ' // 
-' // Usage:     cscript.exe [//nologo] ZTIDomainJoin.wsf [/debug:true]
+' // Usage:     cscript.exe [//nologo] ZTIDomainJoinDelayed.wsf [/debug:true]
 ' // 
 ' // Where:     Three values are possible for DomainErrorRecovery, which is used
 ' //            when JoinDomain is defined and the machine has not already been
@@ -53,7 +53,7 @@ RunNewInstance
 '//  Main Class
 '//----------------------------------------------------------------------------
 
-Class ZTIDomainJoin
+Class ZTIDomainJoinDelayed
 
 	'//----------------------------------------------------------------------------
 	'//  Class instance variable declarations
@@ -136,7 +136,7 @@ Class ZTIDomainJoin
 			ElseIf DomainJoinAttempts > DomainJoinAttempts_MAX then
 			
 				oLogging.CreateEntry "Consult file: c:\windows\debug\NetSetup.LOG for more debugging information.", LogTypeInfo
-				oLogging.CreateEvent 41051, LogTypeWarning, "ZTIDomainJoin has attempted to join to domain [" & oEnvironment.Item("JoinDomain") & "] too many times. Count = " & DomainJoinAttempts, Array(10205)
+				oLogging.CreateEvent 41051, LogTypeWarning, "ZTIDomainJoinDelayed has attempted to join to domain [" & oEnvironment.Item("JoinDomain") & "] too many times. Count = " & DomainJoinAttempts, Array(10205)
 
 			Else
 
