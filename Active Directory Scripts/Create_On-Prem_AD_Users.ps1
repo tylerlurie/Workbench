@@ -30,7 +30,7 @@ Sets the users' passwords to never expire by default. This value will be overrid
 [CmdletBinding(DefaultParameterSetName = 'Default')]
 param (
     [Parameter(Mandatory = $true, Position = 1)][String]$CsvFilePath,
-    [Parameter(Mandatory = $false)][String]$OU = (Get-ADRootDSE).defaultNamingContext,
+    [Parameter(Mandatory = $false)][String]$OU,
     [Parameter(Mandatory = $false)][String]$UPNSuffix = (Get-ADRootDSE).dnsroot,
     [Parameter(Mandatory = $false)][String[]]$Groups = @(),
     [Parameter(Mandatory = $false)][Switch]$ChangePasswordAtLogon,
@@ -38,6 +38,7 @@ param (
 )
 
 ## Define our variables: ##
+$defaultUsersOU = (Get-ADDomain).UsersContainer
 $minPasswordLength = (Get-ADDefaultDomainPasswordPolicy).MinPasswordLength
 $generatedPasswordsCSV = @()
 $generatedPasswordsCSVPath = "user_generated_passwords.csv"
@@ -77,7 +78,7 @@ function Test-PasswordQuality {
 
     $result = @{
         "QualityResult" = "Pass"
-        "Feedback" = @()
+        "Feedback"      = @()
     }
 
     if ($Password.Length -lt $Policy.MinPasswordLength) {
@@ -106,8 +107,8 @@ function Test-PasswordQuality {
     }
 
     if ($Password -notmatch "[0-9]") {
-    $result["QualityResult"] = "Fail"
-    $result["Feedback"] += "Password does not contain a digit."
+        $result["QualityResult"] = "Fail"
+        $result["Feedback"] += "Password does not contain a digit."
     }
     if ($Password -notmatch "[!@#\$%^&*\(\)\-_=+\[\]{}|;:'<>,.?/]") {
         $result["QualityResult"] = "Fail"
@@ -129,11 +130,16 @@ function Get-UserOUPath($userOU, $scriptOU) {
     if (-not [string]::IsNullOrEmpty($userOU) -and (Test-OUExist -OUToCheck $userOU)) {
         return $userOU
     }
-    elseif (-not [string]::IsNullOrEmpty($scriptOU) -and (Test-OUExist -OUToCheck $scriptOU)) {
+    elseif ([string]::IsNullOrEmpty($userOU) -and (-not [string]::IsNullOrEmpty($scriptOU)) -and (Test-OUExist -OUToCheck $scriptOU)) {
         return $scriptOU
     }
+    # If neither option was specified, use the default Users OU
+    elseif ([string]::IsNullOrEmpty($userOU) -and ([string]::IsNullOrEmpty($scriptOU))) {
+        Write-Host "OU was not specified for user $($user.Username). Using the default: `"$defaultUsersOU`""
+        return $defaultUsersOU
+    }
     else {
-        Write-Host "Error: Specified OU '$($userOU)' or script OU '$($scriptOU)' does not exist for user: $($user.Username). Skipping this user..."
+        Write-Host "Error: Specified OU '$($userOU)' does not exist for user: $($user.Username). Skipping this user..."
         return $null
     }
 }
@@ -221,10 +227,10 @@ try {
             POBox             = $user.POBox
             Path              = Get-UserOUPath -userOU $user.OU -scriptOU $OU
         }
-		# If the OU specified OU does not exist, don't try to add the user
-		if ($null -eq $userParams["Path"]) { continue }
-		# Manager cannot be a blank attribute, so only add it if it's included:
-		if ($user.Manager) { $userParams.Add("Manager", $user.Manager) }
+        # If the OU specified OU does not exist, don't try to add the user
+        if ($null -eq $userParams["Path"]) { continue }
+        # Manager cannot be a blank attribute, so only add it if it's included:
+        if ($user.Manager) { $userParams.Add("Manager", $user.Manager) }
         # Generate a random password if not specified in the CSV
         if ([string]::IsNullOrEmpty($user.Password)) {
             $plainTextPassword = (Generate-RandomPassword -Length $minPasswordLength)
@@ -275,7 +281,7 @@ try {
         }
         New-ADUser @userParams
         Write-Host "Created user: $($user.Username)"
-        $allGroups = $Groups + ($user.Groups -split ',\s*' | Where-Object { $_ -ne '' })
+        $allGroups = ($Groups + ($user.Groups -split ',\s*' | Where-Object { $_ -ne '' })) | Select-Object -Unique
         foreach ($group in $allGroups) {
             # Check if the group exists
             if (Get-ADGroup -Filter { Name -eq $group }) {
