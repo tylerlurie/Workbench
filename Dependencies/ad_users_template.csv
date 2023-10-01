@@ -1,1 +1,1 @@
-FirstName,LastName,DisplayName,Username,Password,ChangePasswordAtLogon,PasswordNeverExpires,UPNSuffix,EmailAddress,OU,Department,Office,OfficePhone,Manager,City,Company,Description
+FirstName,LastName,DisplayName,Username,Password,EmailAddress,JobTitle,Department,Manager,Office,StreetAddress,City,State,PostalCode,POBox,Country,OfficePhone,MobilePhone,Organization,Company,Description,UPNSuffix,Groups,ChangePasswordAtLogon,PasswordNeverExpires,OU

@@ -133,7 +133,7 @@ function Get-UserOUPath($userOU, $scriptOU) {
         return $scriptOU
     }
     else {
-        Write-Host "Error: Specified OU '$($userOU)' or script OU '$($scriptOU)' does not exist for user: $($user.Username)"
+        Write-Host "Error: Specified OU '$($userOU)' or script OU '$($scriptOU)' does not exist for user: $($user.Username). Skipping this user..."
         return $null
     }
 }
@@ -204,17 +204,27 @@ try {
             GivenName         = $user.FirstName
             Surname           = $user.LastName
             DisplayName       = if ($user.DisplayName) { $user.DisplayName } else { "$($user.FirstName) $($user.LastName)" }
-            EmailAddress      = $user.Email
-            City              = $user.City
+            EmailAddress      = $user.EmailAddress
+            Organization      = $user.Organization
             Company           = $user.Company
             Country           = $user.Country
             Department        = $user.Department
             Description       = $user.Description
+            Title             = $user.JobTitle
             Office            = $user.Office
             OfficePhone       = $user.OfficePhone
-            Manager           = $user.Manager
+            MobilePhone       = $user.MobilePhone
+            StreetAddress     = $user.StreetAddress
+            City              = $user.City
+            State             = $user.State
+            PostalCode        = $user.PostalCode
+            POBox             = $user.POBox
             Path              = Get-UserOUPath -userOU $user.OU -scriptOU $OU
         }
+		# If the OU specified OU does not exist, don't try to add the user
+		if ($null -eq $userParams["Path"]) { continue }
+		# Manager cannot be a blank attribute, so only add it if it's included:
+		if ($user.Manager) { $userParams.Add("Manager", $user.Manager) }
         # Generate a random password if not specified in the CSV
         if ([string]::IsNullOrEmpty($user.Password)) {
             $plainTextPassword = (Generate-RandomPassword -Length $minPasswordLength)
