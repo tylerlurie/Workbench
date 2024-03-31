@@ -4,10 +4,64 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 	Exit
 }
 ## TOOD: Finish prompting for initial questions
+$sharesDir = Read-Host "Type the path where the MDT shares should be created"
 $LCU_OS = Read-Host "What version of Windows is the latest WinPE based on? (i.e., `"Microsoft Server Operating System version 23H2 x64`", `"Windows 11 version 23H2 x64`")"
 $delayDomainJoin = Read-Host "Do you want to domain join after or during an image deployment (A = after; D = during)"
+$wantHighPerformance = Read-Host "Do you want to configure the task sequences to run at high performance mode? (Y/N)"
+# TODO: Make these arrays and loop to grab as many ISOs as needed
+# TODO: Modify prompts to allow for deploying server OS's
+$windowsVersion = Read-Host "What version of Windows do you want to deploy? (10/11)"
+$windowsRelease = Read-Host "What release of Windows do you want to deploy? (21H2, 22H2, etc.)"
+$windowsEdition = Read-Host "What edition of Windows do you want to deploy? (Pro, Enterprise, etc.)"
 ## Global variables
 $ProgressPreference = 'SilentlyContinue'
+$locale = Get-Culture | Select-Object -ExpandProperty Name
+$LocaleLanguageMap = @{
+    "ar-SA" = "Arabic"
+    "bg-BG" = "Bulgarian"
+    "pt-BR" = "BrazilianPortuguese"
+    "zh-CN" = "Chinese_Simplified"
+    "zh-TW" = "Chinese_Traditional"
+    "hr-HR" = "Croatian"
+    "cs-CZ" = "Czech"
+    "da-DK" = "Danish"
+    "nl-NL" = "Dutch"
+    "en-US" = "English"
+    "en-GB" = "EnglishInternational"; "en-AU" = "EnglishInternational"; "en-CA" = "EnglishInternational"; "en-NZ" = "EnglishInternational"
+    "et-EE" = "Estonian"
+    "fi-FI" = "Finnish"
+    "fr-FR" = "French"
+    "fr-CA" = "FrenchCanadian"
+    "de-DE" = "German"
+    "el-GR" = "Greek"
+    "he-IL" = "Hebrew"
+    "hu-HU" = "Hungarian"
+    "it-IT" = "Italian"
+    "ja-JP" = "Japanese"
+    "ko-KR" = "Korean"
+    "lv-LV" = "Latvian"
+    "lt-LT" = "Lithuanian"
+    "no-NO" = "Norwegian"
+    "pl-PL" = "Polish"
+    "pt-PT" = "Portuguese"
+    "ro-RO" = "Romanian"
+    "ru-RU" = "Russian"
+    "sr-Latn-RS" = "SerbianLatin"
+    "sk-SK" = "Slovak"
+    "sl-SI" = "Slovenian"
+    "es-ES" = "Spanish"
+    "es-MX" = "Spanish_Mexico"
+    "sv-SE" = "Swedish"
+    "th-TH" = "Thai"
+    "tr-TR" = "Turkish"
+    "uk-UA" = "Ukrainian"
+}
+## Functions
+function Test-DownloadLink {
+    param($Url)
+    try { return (Invoke-WebRequest -Uri $Url -Method Head).StatusCode -eq 200 }
+    catch { return $false }
+}
 ## TODO: Potentially create service accounts and MDT groups
 ## TODO: Disable NetBIOS/TCP
 ## TODO: Install and configure WDS
@@ -76,7 +130,7 @@ Write-Host "Added x86 folder structure to the WinPE."
 Write-Host "Added support for HTA applications to the WinPE."
 ## Patch the WinPE Media with the LCU for the appropriate Windows version
  # Mount the WinPE media
-$peWimFilePath = $"{env:ProgramFiles(x86)}\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\$(Get-Culture | Select-Object -ExpandProperty Name)\winpe.wim"
+$peWimFilePath = $"{env:ProgramFiles(x86)}\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\$locale\winpe.wim"
 $mountDir = "$env:SystemDrive\Mount"
 if (-not (Test-Path "$mountDir")) {
     Write-Host "Creating mount directory: $mountDir"
@@ -233,3 +287,35 @@ If ($delayDomainJoin -eq "A") {
     }
     Write-Host "Domain join step adjusted and recover step removed from task sequences."
 }
+If ($wantHighPerformance -eq "Y") {
+    # TODO: Need to do this step in all sequences in the needed places. The default has three places for this.
+}
+<#
+# Download Windows ISOs
+# Update: No longer needed. Download links can be created customizing the file name. Here is a sample DL Link:
+# Old code left in place should this ever be needed.
+#       https://software.download.prss.microsoft.com/dbazure/Win11_23H2_EnglishInternational_x64v2.iso
+# Credit: https://github.com/pbatard/Fido/tree/master
+$isoDownloaderScriptURL = "https://raw.githubusercontent.com/pbatard/Fido/master/Fido.ps1"
+$scriptFilePath = Join-Path $env:TEMP "Fido.ps1"
+(New-Object System.Net.WebClient).DownloadFile($isoDownloaderScriptURL, $scriptFilePath)
+$params = @{ Win = $windowsVersion; Rel = $windowsRelease; Ed = $windowsEdition; Arch = "x64" }
+if ($locale -eq "en-US") { $params.Add("Lang", "English") } # Defaults to English International otherwise
+Set-ExecutionPolicy -Scope CurrentUser Bypass
+$isoDlLink = & $scriptFilePath $params -GetUrl
+$isoDlLink = $isoDlLink -split "\?" | Select-Object -First 1
+#>
+# TODO: The original versions likely don't have a version (i.e., Windows 10 1507 is Win10_English_x64.iso) - need to account for a blank release during configuration
+$isoDlLink = "https://software.download.prss.microsoft.com/dbazure/Win$($windowsVersion)_$($windowsRelease)_$($LocaleLanguageMap[$locale])_x64.iso"
+$isValidISOLink = Test-DownloadLink -Url $isoDlLink
+$i = 1
+while ($isValidISOLink -eq $true) {
+    $isoLink = "https://software.download.prss.microsoft.com/dbazure/Win$($windowsVersion)_$($windowsRelease)_$($LocaleLanguageMap[$locale])_x64v$($i).iso"
+    $isValidISOLink = Test-DownloadLink -Url $isoLink
+    if ($isValidISOLink) { $isoDlLink = $isoLink }
+    $i++
+}
+#Write-Host "The highest version and download link for Windows $windowsVersion version $windowsRelease is:`n$isoDlLink"
+$isoFile = $isoDlLink -split "/" | Select-Object -Last 1
+$isoDumpDir = Join-Path $env:TEMP $isoFile
+(New-Object System.Net.WebClient).DownloadFile($isoDlLink, $isoDumpDir)
