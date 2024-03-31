@@ -93,7 +93,6 @@ function Test-DownloadLink {
     try { return (Invoke-WebRequest -Uri $Url -Method Head).StatusCode -eq 200 }
     catch { return $false }
 }
-# Define our base link
 if ($Locale -notin $validLocales) { Write-Host "Invalid locale specified." -ForegroundColor Red; return }
 if ($Type -eq "Server") {
 	if ($Version -notin $validServerVersions) { Write-Host "Invalid server OS version specified." -ForegroundColor Red; return }
