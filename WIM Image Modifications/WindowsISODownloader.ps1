@@ -100,7 +100,7 @@ if ($Type -eq "Server") {
 	if ("" -ne $Release) { Write-Host "Release specified but not necessary for server OS. Release will be ignored." }
 	$baseServerLink = "https://www.microsoft.com/$($locale.ToLower())/evalcenter/download-windows-server-$Version"
 	$possibleISOLinks = Invoke-WebRequest -UseBasicParsing -Uri $baseServerLink | Select-Object -ExpandProperty Links | Where-Object { $_.href -like "*culture=$locale*" -and $_.OuterHtml -like "*64-bit edition*" } | Select-Object -ExpandProperty href
-	# Since we cannot determine which FWD link is the ISO (as opposed to the VHD or Azure VMs
+	# Since we cannot determine which FWD link is the ISO (as opposed to the VHD or Azure VMs)
 	$isoDlLink = ""
 	foreach ($link in $possibleISOLinks) {
 		$request = [System.Net.WebRequest]::Create($link)
@@ -111,9 +111,9 @@ if ($Type -eq "Server") {
 	if ("" -eq $isoDlLink) { Write-Host "Could not obtain download link for Windows Server $Version" -ForegroundColor Red; return }
 	if ($GetUrl.IsPresent) { Write-Host $isoDlLink -ForegroundColor Green; return }
 	$isoFile = $isoDlLink -split "/" | Select-Object -Last 1
-	(New-Object System.Net.WebClient).DownloadFile($isoDlLink, $(Join-Path OutputDir $isoFile))
+	(New-Object System.Net.WebClient).DownloadFile($isoDlLink, $(Join-Path $OutputDir $isoFile))
 	$isoFile = $isoDlLink -split "/" | Select-Object -Last 1
-	Write-Host "Windows Server $Version ISO downloaded to $(Join-Path OutputDir $isoFile)" -ForegroundColor Green
+	Write-Host "Windows Server $Version ISO downloaded to $(Join-Path $OutputDir $isoFile)" -ForegroundColor Green
 	# TODO: Convert from Eval to Full
 }
 elseif ($Type -eq "Client") {
@@ -121,7 +121,7 @@ elseif ($Type -eq "Client") {
 	if ($Edition -notin $validClientEditions) { Write-Host "Invalid client OS edition specified." -ForegroundColor Red; return }
     if ($Release -eq "") { Write-Host "No release specified." -ForegroundColor Red; return }
 	if ($Release -eq $firstOSReleases[$Version]) { $baseClientLink = "https://software.download.prss.microsoft.com/dbazure/Win$($Version)_$($LocaleLanguageMap[$locale])_x64.iso" }
-	else { $baseClientLink = "https://software.download.prss.microsoft.com/dbazure/Win$($Version)_$($Release)_$($LocaleLanguageMap[$locale])_x64.iso" }
+	else { $baseClientLink = "https://software.download.prss.microsoft.com/dbazure/Win$($Version)_$($Release)_$($LocaleLanguageMap[$locale])_x64.iso?t" }
 	$isoDlLink = $baseClientLink
 	$isValidISOLink = Test-DownloadLink -Url $isoDlLink
 	$i = 1
@@ -135,8 +135,8 @@ elseif ($Type -eq "Client") {
 	} while (($isValidISOLink -eq $true) -or ($failCount -lt 2)) # Microsoft have sometimes skipped appending v1 to ISO's and instead began with v2 at the end of the file name. Set the failure count threshold to 2 to account for this.
 	if ("" -eq $isoDlLink) { Write-Host "Could not obtain download link for Windows $Version version $Release" -ForegroundColor Red; return }
 	if ($GetUrl.IsPresent) { Write-Host $isoDlLink -ForegroundColor Green; return }
-	$isoFile = $isoDlLink -split "/" | Select-Object -Last 1
-	(New-Object System.Net.WebClient).DownloadFile($isoDlLink, $(Join-Path OutputDir $isoFile))
-	Write-Host "Windows $Version version $Release ISO downloaded to $(Join-Path OutputDir $isoFile)" -ForegroundColor Green
+	$isoFile = ($isoDlLink -split "/" | Select-Object -Last 1) -split "\?" | Select-Object -First 1
+	(New-Object System.Net.WebClient).DownloadFile($isoDlLink, $(Join-Path $OutputDir $isoFile))
+	Write-Host "Windows $Version version $Release ISO downloaded to $(Join-Path $OutputDir $isoFile)" -ForegroundColor Green
 	# TODO: Remove other editions + conversion for enterprise ISO
 }
