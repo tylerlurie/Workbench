@@ -278,10 +278,8 @@ If ($delayDomainJoin -eq "A") {
         # Find the target step before which the new step should be added
         $targetStepName = "Restore User State"
         $targetStep = $steps | Where-Object { $_.name -eq $targetStepName }
-
         # Insert the new step before the target step
         if ($null -ne $targetStep) { $targetStep.ParentNode.InsertBefore($newStep, $targetStep) | Out-Null }
-
         # Save the modified XML back to the file
         $xml.Save($xmlFilePath)
     }
@@ -290,32 +288,11 @@ If ($delayDomainJoin -eq "A") {
 If ($wantHighPerformance -eq "Y") {
     # TODO: Need to do this step in all sequences in the needed places. The default has three places for this.
 }
-<#
 # Download Windows ISOs
-# Update: No longer needed. Download links can be created customizing the file name. Here is a sample DL Link:
-# Old code left in place should this ever be needed.
-#       https://software.download.prss.microsoft.com/dbazure/Win11_23H2_EnglishInternational_x64v2.iso
-# Credit: https://github.com/pbatard/Fido/tree/master
-$isoDownloaderScriptURL = "https://raw.githubusercontent.com/pbatard/Fido/master/Fido.ps1"
-$scriptFilePath = Join-Path $env:TEMP "Fido.ps1"
-(New-Object System.Net.WebClient).DownloadFile($isoDownloaderScriptURL, $scriptFilePath)
-$params = @{ Win = $windowsVersion; Rel = $windowsRelease; Ed = $windowsEdition; Arch = "x64" }
-if ($locale -eq "en-US") { $params.Add("Lang", "English") } # Defaults to English International otherwise
+$scriptLink = "https://raw.githubusercontent.com/tylerlurie/Workbench/main/WIM%20Image%20Modifications/WindowsISODownloader.ps1"
+$scriptFile = $scriptLink -split "/" | Select-Object -Last 1
+$scriptPath = Join-Path ($env:TEMP, $scriptFile)
+(New-Object System.Net.WebClient).DownloadFile($scriptLink, $scriptPath)
 Set-ExecutionPolicy -Scope CurrentUser Bypass
-$isoDlLink = & $scriptFilePath $params -GetUrl
-$isoDlLink = $isoDlLink -split "\?" | Select-Object -First 1
-#>
-# TODO: The original versions likely don't have a version (i.e., Windows 10 1507 is Win10_English_x64.iso) - need to account for a blank release during configuration
-$isoDlLink = "https://software.download.prss.microsoft.com/dbazure/Win$($windowsVersion)_$($windowsRelease)_$($LocaleLanguageMap[$locale])_x64.iso"
-$isValidISOLink = Test-DownloadLink -Url $isoDlLink
-$i = 1
-while ($isValidISOLink -eq $true) {
-    $isoLink = "https://software.download.prss.microsoft.com/dbazure/Win$($windowsVersion)_$($windowsRelease)_$($LocaleLanguageMap[$locale])_x64v$($i).iso"
-    $isValidISOLink = Test-DownloadLink -Url $isoLink
-    if ($isValidISOLink) { $isoDlLink = $isoLink }
-    $i++
-}
-#Write-Host "The highest version and download link for Windows $windowsVersion version $windowsRelease is:`n$isoDlLink"
-$isoFile = $isoDlLink -split "/" | Select-Object -Last 1
-$isoDumpDir = Join-Path $env:TEMP $isoFile
-(New-Object System.Net.WebClient).DownloadFile($isoDlLink, $isoDumpDir)
+& $scriptPath -Type "Client" -Version $windowsVersion -Release $windowsRelease -Edition $windowsEdition -OutputDir $env:TEMP
+$isoFile = Get-ChildItem -Path $env:TEMP -Filter *.iso | Select-Object -ExpandProperty Name
