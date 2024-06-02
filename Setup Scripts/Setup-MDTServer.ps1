@@ -13,49 +13,14 @@ $wantHighPerformance = Read-Host "Do you want to configure the task sequences to
 $windowsVersion = Read-Host "What version of Windows do you want to deploy? (10/11)"
 $windowsRelease = Read-Host "What release of Windows do you want to deploy? (21H2, 22H2, etc.)"
 $windowsEdition = Read-Host "What edition of Windows do you want to deploy? (Pro, Enterprise, etc.)"
+$mdtUsers = "Enter the name of the AD group of users who can read from the MDT shares"
+$mdtAdmins = "Enter the name of the AD group of users who can modify the MDT shares"
+$buildSA = Read-Host "Enter the username of the service account used to build MDT images"
+$domainJoinSA = Read-Host "Enter the username of the service account used to join the domain during deployments"
+$wsusServer = Read-Host "Enter a WSUS server to deploy updates from (blank for none)"
 ## Global variables
 $ProgressPreference = 'SilentlyContinue'
 $locale = Get-Culture | Select-Object -ExpandProperty Name
-$LocaleLanguageMap = @{
-    "ar-SA" = "Arabic"
-    "bg-BG" = "Bulgarian"
-    "pt-BR" = "BrazilianPortuguese"
-    "zh-CN" = "Chinese_Simplified"
-    "zh-TW" = "Chinese_Traditional"
-    "hr-HR" = "Croatian"
-    "cs-CZ" = "Czech"
-    "da-DK" = "Danish"
-    "nl-NL" = "Dutch"
-    "en-US" = "English"
-    "en-GB" = "EnglishInternational"; "en-AU" = "EnglishInternational"; "en-CA" = "EnglishInternational"; "en-NZ" = "EnglishInternational"
-    "et-EE" = "Estonian"
-    "fi-FI" = "Finnish"
-    "fr-FR" = "French"
-    "fr-CA" = "FrenchCanadian"
-    "de-DE" = "German"
-    "el-GR" = "Greek"
-    "he-IL" = "Hebrew"
-    "hu-HU" = "Hungarian"
-    "it-IT" = "Italian"
-    "ja-JP" = "Japanese"
-    "ko-KR" = "Korean"
-    "lv-LV" = "Latvian"
-    "lt-LT" = "Lithuanian"
-    "no-NO" = "Norwegian"
-    "pl-PL" = "Polish"
-    "pt-PT" = "Portuguese"
-    "ro-RO" = "Romanian"
-    "ru-RU" = "Russian"
-    "sr-Latn-RS" = "SerbianLatin"
-    "sk-SK" = "Slovak"
-    "sl-SI" = "Slovenian"
-    "es-ES" = "Spanish"
-    "es-MX" = "Spanish_Mexico"
-    "sv-SE" = "Swedish"
-    "th-TH" = "Thai"
-    "tr-TR" = "Turkish"
-    "uk-UA" = "Ukrainian"
-}
 ## Functions
 function Test-DownloadLink {
     param($Url)
@@ -224,38 +189,29 @@ Write-Host "Fixed support for the HideShell command"
 # Delay domain joining until the end of the task sequence if the user chose to
 If ($delayDomainJoin -eq "A") {
     Write-Host "Delaying domain join to the end of new task sequences by default..."
-    # Fix the script to wait
     $dlLink = "https://raw.githubusercontent.com/tylerlurie/Workbench/main/MDT%20Modifications/ZTIDomainJoinDelayed.wsf"
     $file = $dlLink -split "/" | Select-Object -Last 1
     $outputPath = Join-Path $mdtScriptDir $file
     (New-Object System.Net.WebClient).DownloadFile($dlLink, $outputPath)
     Write-Host "Added ZTIDomainJoinDelayed.wsf to the MDT Scripts path."
-    # Remove the component from the XMLs
     $xmlFiles = "Unattend_Core_x64.xml.10.0.xml", "Unattend_Core_x86.xml.10.0.xml", "Unattend_x64.xml.10.0.xml", "Unattend_x86.xml.10.0.xml"
     foreach ($xml in $xmlFiles) {
-    # Load the XML file
     [xml]$xml = Get-Content "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\$xml"
     $components = $xml.unattend.settings | Where-Object { $_.pass -eq "specialize" } | Select-Object -ExpandProperty component
     $componentToRemove = $components | Where-Object { $_.name -eq "Microsoft-Windows-UnattendedJoin" }
-    # Remove the component if found
     if ($null -ne $componentToRemove) { $componentToRemove.ParentNode.RemoveChild($componentToRemove) | Out-Null }
-    # Save the modified XML back to the file
     $xml.Save("$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\$xml")
     }
     Write-Host "Modified the default unattend.xml files to delay domain joining until the end of the task sequence."
-    # Define paths for the XML files
     $xmlFiles = @("Client.xml", "Server.xml")
     $templatePath = "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates"
 
     foreach ($xmlFileName in $xmlFiles) {
         $xmlFilePath = Join-Path -Path $templatePath -ChildPath $xmlFileName
-        # Load the XML file
         [xml]$xml = Get-Content -Path $xmlFilePath
-        # Find and remove the specified step
         $steps = $xml.sequence.group.step
         $stepToRemove = $steps | Where-Object { $_.type -eq "BDD_RecoverDomainJoin" -and $_.name -eq "Recover From Domain " }
         if ($null -ne $stepToRemove) { $stepToRemove.ParentNode.RemoveChild($stepToRemove) | Out-Null }
-        # Prepare the new step to add
         $newStep = $xml.CreateElement("step")
         $newStep.SetAttribute("type", "SMS_TaskSequence_RunCommandLineAction")
         $newStep.SetAttribute("name", "Join Domain")
@@ -274,25 +230,215 @@ If ($delayDomainJoin -eq "A") {
 </defaultVarList>
 <action>cscript.exe %SCRIPTROOT%\ZTIDomainJoinDelayed.wsf</action>
 "@
-
-        # Find the target step before which the new step should be added
         $targetStepName = "Restore User State"
         $targetStep = $steps | Where-Object { $_.name -eq $targetStepName }
-        # Insert the new step before the target step
         if ($null -ne $targetStep) { $targetStep.ParentNode.InsertBefore($newStep, $targetStep) | Out-Null }
-        # Save the modified XML back to the file
         $xml.Save($xmlFilePath)
     }
     Write-Host "Domain join step adjusted and recover step removed from task sequences."
 }
 If ($wantHighPerformance -eq "Y") {
-    # TODO: Need to do this step in all sequences in the needed places. The default has three places for this.
+    Write-Host "Adding High Performance Power Plan steps into default task sequences..."
+    $xmlFiles = @("Client.xml", "Server.xml")
+    $templatePath = "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates"
+    foreach ($xmlFileName in $xmlFiles) {
+        $xmlFilePath = Join-Path -Path $templatePath -ChildPath $xmlFileName
+        $xml = [xml](Get-Content $xmlFile)
+        $highPerformanceCommand = "cmd /c powercfg.exe /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
+        $balancedPlanCommand = "cmd /c powercfg.exe /setactive 381b4222-f694-41f0-9685-ff5bb260df2e"
+        function InsertStep($groupName, $stepName, $newStepName, $actionCommand) {
+            $targetStep = $xml.SelectNodes("//group[@name='$groupName']/step[@name='$stepName']")
+            $newNode = $xml.CreateElement("step")
+            $newNode.SetAttribute("type", "SMS_TaskSequence_RunCommandLineAction")
+            $newNode.SetAttribute("name", $newStepName)
+            $newNode.SetAttribute("description", "")
+            $newNode.SetAttribute("disable", "false")
+            $newNode.SetAttribute("continueOnError", "true")
+            $newNode.SetAttribute("startIn", "")
+            $newNode.SetAttribute("successCodeList", "0 3010")
+            $newNode.SetAttribute("runIn", "WinPEandFullOS")
+            $actionNode = $xml.CreateElement("action")
+            $actionNode.InnerText = $actionCommand
+            $newNode.AppendChild($actionNode)
+            $targetStep.ParentNode.InsertAfter($newNode, $targetStep)
+        }
+        InsertStep "Preinstall" "Gather local only" "Set High Performance Plan" $highPerformanceCommand
+        InsertStep "State Restore" "Gather local only" "Set High Performance Plan" $highPerformanceCommand
+        InsertStep "Capture Image" "Gather local only" "Set High Performance Plan" $highPerformanceCommand
+        InsertStep "State Restore" "Enable BitLocker" "Set Balanced Plan" $balancedPlanCommand
+        $xml.Save($xmlFile)
+    }
+    Write-Host "Successfully added High Performance Power Plan steps into default task sequences."
 }
+# Fix the generating of Windows Catalog files:
+Write-Host "Applying fix for generating Windows Catalog files..."
+# Define the path to the DeploymentTools.xml file
+$xmlFile = "$env:ProgramFiles\Microsoft Deployment Toolkit\Bin\DeploymentTools.xml"
+$xml = [xml](Get-Content $xmlFile)
+$toolNode = $xml.SelectSingleNode("//tool[@name='imgmgr.exe']")
+$toolNode.InnerText = "%ADKPath%\Deployment Tools\WSIM\%RealPlatform%"
+$xml.Save($xmlFile)
+Write-Host "Catalog file fix applied successfully."
 # Download Windows ISOs
 $scriptLink = "https://raw.githubusercontent.com/tylerlurie/Workbench/main/WIM%20Image%20Modifications/WindowsISODownloader.ps1"
 $scriptFile = $scriptLink -split "/" | Select-Object -Last 1
 $scriptPath = Join-Path ($env:TEMP, $scriptFile)
+Write-Host "Downloading ISO file..."
 (New-Object System.Net.WebClient).DownloadFile($scriptLink, $scriptPath)
 Set-ExecutionPolicy -Scope CurrentUser Bypass
-& $scriptPath -Type "Client" -Version $windowsVersion -Release $windowsRelease -Edition $windowsEdition -OutputDir $env:TEMP
+& $scriptPath -Type "Client" -Version $windowsVersion -Release $windowsRelease -Edition $windowsEdition -Locale $locale -OutputDir $env:TEMP
 $isoFile = Get-ChildItem -Path $env:TEMP -Filter *.iso | Select-Object -ExpandProperty Name
+Write-Host "$isoFile downloaded successfully to $env:TEMP\$isoFile"
+Write-Host "Removing additional indexes..."
+Mount-DiskImage -ImagePath "$env:TEMP\$isoFile" -NoDriveLetter | Out-Null
+$ISOPath = Get-DiskImage "$env:TEMP\$isoFile" | Select-Object DevicePath -ExpandProperty DevicePath
+$isoExtractDir = $isoFile.Substring(0, $isoFile.LastIndexOf("."))
+Copy-Item -Path "$ISOPath\" -Destination "$env:TEMP\$isoExtractDir" -Recurse
+Dismount-DiskImage -ImagePath "$env:TEMP\$isoFile" | Out-Null
+$images = Get-WindowsImage -ImagePath "$env:TEMP\$isoExtractDir\sources\install.wim" | Select-Object -ExpandProperty ImageName
+ForEach ($image in $images) {
+    If ($windowsEdition -ne $image) { Remove-WindowsImage -ImagePath "$env:TEMP\$isoExtractDir\sources\install.wim" -Name $image }
+}
+Write-Host "Removed all unnecessary editions of Windows."
+Import-Module "$env:ProgramFiles\Microsoft Deployment Toolkit\bin\MicrosoftDeploymentToolkit.psd1"
+## Create the shares
+# Define variables
+$netBIOSDomainName = $env:USERDOMAIN
+$buildSharePath = "$sharesDir\BuildShare"
+$deploySharePath = "$sharesDir\DeployShare"
+# Create the main directories if they do not already exist
+If (-not (Test-Path -Path $buildSharePath)) {
+New-Item -ItemType Directory -Path $buildSharePath
+}
+If (-not (Test-Path -Path $deploySharePath)) {
+New-Item -ItemType Directory -Path $deploySharePath
+}
+# Share the directories with hidden shares and set full access permissions
+New-SmbShare -Name "BuildShare$" -Path $buildSharePath -FullAccess "$netBIOSDomainName\$mdtAdmins", "$netBIOSDomainName\$buildSA"
+New-SmbShare -Name "DeployShare$" -Path $deploySharePath -FullAccess "$netBIOSDomainName\$mdtAdmins", "$netBIOSDomainName\$mdtUsers"
+New-PSDrive -Name "DS001" -PSProvider "MDTProvider" -Root "$MdtBuildShare" -Description "MDT Build Share" -NetworkPath "\\$env:ComputerName\BuildShare`$" | Add-MDTPersistentDrive | Out-Null
+New-Item -Path "DS001:\Operating Systems\Windows $windowsVersion $windowsRelease" -ItemType Directory | Out-Null
+Write-Host "Creating WinPE Selection Profile..."
+New-Item -Path "DS001:\Packages\WinPE" -ItemType Directory | Out-Null
+New-Item -Path "DS001:\Selection Profiles" -enable "True" -Name "WinPE" -Comments "" -Definition "<SelectionProfile><Include path=`"Packages\WinPE`" /></SelectionProfile>" -ReadOnly "False" | Out-Null
+Write-Host "Creating the Build Task Sequence..."
+Import-MDTOperatingSystem -Path "DS001:\Operating Systems\Windows $windowsVersion $windowsRelease" -SourcePath "$env:TEMP\$isoExtractDir" -DestinationFolder "$windowsVersion $windowsRelease $windowsEdition" | Out-Null
+Import-MdtTaskSequence -Path "DS001:\Task Sequences" -Name "Build a Windows $windowsVersion $windowsRelease Reference Image" -Template "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\Client.xml"
+Write-Host "Build Task Sequence created successfully."
+Write-Host "Adjusting CustomSettings.ini..."
+$customSettingsContent =
+'[Settings]
+Priority=Default, TaskSequenceID
+Properties=MyCustomProperty
+
+[Default]
+_SMSTSORGNAME=Organization
+_SMSTSPackageName=%TaskSequenceName%
+; Comment this in with valid TSID to skip the Task Sequence selection screen
+;TaskSequenceID=OS-XXXX-B
+OSInstall=Y
+DriverSelectionProfile=Nothing
+DriverInjectionMode=All
+SkipCapture=YES
+SkipAdminPassword=YES
+SkipProductKey=YES
+SkipComputerBackup=YES
+SkipBitLocker=YES
+; Comment this in to skip the Task Sequence selection screen
+;SkipTaskSequence=YES
+SkipApplications=YES
+SkipComputerName=YES
+TimeZoneName=' + $(Get-Timezone).Id + '
+KeyboardLocale=en-US
+UILanguage=en-US
+UserLocale=en-US
+BitsPerPel=32
+VRefresh=60
+XResolution=1
+YResolution=1
+SkipUserData=YES
+SkipDomainMembership=YES
+SkipLocaleSelection=YES
+SkipTimeZone=YES
+SkipSummary=YES
+SkipFinalSummary=YES
+FinishAction=SHUTDOWN
+WSUSServer=http://' + $wsusServer + ':8530
+SLShare=\\' + $env:COMPUTERNAME + '\BuildShare$\Logs
+EventService=http://' + $env:COMPUTERNAME + ':9800
+DoCapture=YES
+ComputerBackupLocation=\\' + $env:COMPUTERNAME + '\BuildShare$\Captures
+BackupFile=install-#year(date) & "-" & month(date) & "-" & day(date) & "-" & hour(time) & "-" & minute(time)#.wim
+HideShell=NO'
+# Remove the line for WSUS server if one wasn't supplied:
+If ($wsusServer -eq '') { $customSettingsContent = $customSettingsContent.Replace('WSUSServer=http://' + $wsusServer + ':8530' + "`n", "") }
+Out-File -FilePath "$buildSharePath\Control\Settings.xml" -Encoding utf8 -InputObject $customSettingsContent -Force
+## Change MDT config to disable x86 support for boot media
+Write-Host "Removing support for x86..."
+$XMLContent = Get-Content "$buildSharePath\Control\Settings.xml"
+$XMLContent = $XMLContent -Replace '<SupportX86>True</SupportX86>','<SupportX86>False</SupportX86>'
+$XMLContent | Out-File "$buildSharePath\Control\Settings.xml"
+Write-Host "Done creating build share."
+## Deploy Share:
+New-PSDrive -Name "DS002" -PSProvider "MDTProvider" -Root "$MdtBuildShare" -Description "MDT Deploy Share" -NetworkPath "\\$env:ComputerName\DeployShare`$" | Add-MDTPersistentDrive | Out-Null
+New-Item -Path "DS002:\Operating Systems\Windows $windowsVersion $windowsRelease" -ItemType Directory | Out-Null
+Write-Host "Creating WinPE Selection Profile..."
+New-Item -Path "DS002:\Packages\WinPE" -ItemType Directory | Out-Null
+New-Item -Path "DS002:\Selection Profiles" -enable "True" -Name "WinPE" -Comments "" -Definition "<SelectionProfile><Include path=`"Packages\WinPE`" /></SelectionProfile>" -ReadOnly "False" | Out-Null
+Write-Host "Creating the Build Task Sequence..."
+Import-MdtTaskSequence -Path "DS002:\Task Sequences" -Name "Build a Windows $windowsVersion $windowsRelease Reference Image" -Template "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\Client.xml" -Comments "" -ID "W$windowsVersion-$windowsRelease-B" -Version "1.0" -OperatingSystemPath "DS001\Operating Systems\Windows $windowsVersion $windowsRelease"
+Write-Host "Build Task Sequence created successfully."
+Write-Host "Adjusting CustomSettings.ini..."
+$customSettingsContent =
+'[Settings]
+Priority=Default, TaskSequenceID
+Properties=MyCustomProperty
+
+[Default]
+_SMSTSORGNAME=Organization
+_SMSTSPackageName=%TaskSequenceName%
+; Comment this in with valid TSID to skip the Task Sequence selection screen
+;TaskSequenceID=OS-XXXX-B
+OSInstall=Y
+DriverSelectionProfile=Nothing
+DriverInjectionMode=All
+SkipCapture=YES
+SkipAdminPassword=YES
+SkipProductKey=YES
+SkipComputerBackup=YES
+SkipBitLocker=YES
+; Comment this in to skip the Task Sequence selection screen
+;SkipTaskSequence=YES
+SkipApplications=YES
+SkipComputerName=YES
+TimeZoneName=' + $(Get-Timezone).Id + '
+KeyboardLocale=en-US
+UILanguage=en-US
+UserLocale=en-US
+BitsPerPel=32
+VRefresh=60
+XResolution=1
+YResolution=1
+SkipUserData=YES
+SkipDomainMembership=YES
+SkipLocaleSelection=YES
+SkipTimeZone=YES
+SkipSummary=YES
+SkipFinalSummary=YES
+FinishAction=SHUTDOWN
+WSUSServer=http://' + $wsusServer + ':8530
+SLShare=\\' + $env:COMPUTERNAME + '\BuildShare$\Logs
+EventService=http://' + $env:COMPUTERNAME + ':9800
+DoCapture=YES
+ComputerBackupLocation=\\' + $env:COMPUTERNAME + '\BuildShare$\Captures
+BackupFile=install-#year(date) & "-" & month(date) & "-" & day(date) & "-" & hour(time) & "-" & minute(time)#.wim
+HideShell=NO'
+# Remove the line for WSUS server if one wasn't supplied:
+If ($wsusServer -eq '') { $customSettingsContent = $customSettingsContent.Replace('WSUSServer=http://' + $wsusServer + ':8530' + "`n", "") }
+Out-File -FilePath "$buildSharePath\Control\Settings.xml" -Encoding utf8 -InputObject $customSettingsContent -Force
+## Change MDT config to disable x86 support for boot media
+Write-Host "Removing support for x86..."
+$XMLContent = Get-Content "$buildSharePath\Control\Settings.xml"
+$XMLContent = $XMLContent -Replace '<SupportX86>True</SupportX86>','<SupportX86>False</SupportX86>'
+$XMLContent | Out-File "$buildSharePath\Control\Settings.xml"
+Write-Host "Done creating build share."
