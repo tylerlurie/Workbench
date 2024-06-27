@@ -4,6 +4,8 @@ if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]:
 	Exit
 }
 ## TOOD: Finish prompting for initial questions
+$companyName = Read-Host "Type your organization name"
+$adDomain = Read-Host "Enter the FQDN of your Active Directory domain"
 $sharesDir = Read-Host "Type the path where the MDT shares should be created"
 $LCU_OS = Read-Host "What version of Windows is the latest WinPE based on? (i.e., `"Microsoft Server Operating System version 23H2 x64`", `"Windows 11 version 23H2 x64`")"
 $delayDomainJoin = Read-Host "Do you want to domain join after or during an image deployment (A = after; D = during)"
@@ -16,8 +18,15 @@ $windowsEdition = Read-Host "What edition of Windows do you want to deploy? (Pro
 $mdtUsers = "Enter the name of the AD group of users who can read from the MDT shares"
 $mdtAdmins = "Enter the name of the AD group of users who can modify the MDT shares"
 $buildSA = Read-Host "Enter the username of the service account used to build MDT images"
+$buildSAPassword = Read-Host -AsSecureString -Prompt "Enter the build service account password"
 $domainJoinSA = Read-Host "Enter the username of the service account used to join the domain during deployments"
+$domainJoinSAPassword = Read-Host -AsSecureString -Prompt "Enter the domain join service account password"
 $wsusServer = Read-Host "Enter a WSUS server to deploy updates from (blank for none)"
+$useSSL = Read-Host "Does this WSUS server require SSL? (y/n)"
+$wsusSSL = @("", "8530")
+if ($null -ne $useSSL) { $wsusSSL = @("s", "8531") }
+$pcObjectOU = Read-Host "Type the distinguishedName of the OU to place deployed PCs"
+$pcPrefix = Read-Host "Type a prefix for deployed PCs (i.e., DESKTOP)"
 ## Global variables
 $ProgressPreference = 'SilentlyContinue'
 $locale = Get-Culture | Select-Object -ExpandProperty Name
@@ -45,6 +54,7 @@ $InstallerPath = Join-Path $env:TEMP $file
 Write-Host "Windows ADK Download Complete."
 Write-Host "Installing the Windows ADK..."
 Start-Process $InstallerPath -Wait -ArgumentList "/features OptionId.DeploymentTools OptionId.UserStateMigrationTool /q" -Verb RunAs
+Remove-Item $InstallerPath -Force
 Write-Host "ADK Installed."
  # Windows PE Add-on for the Windows ADK
 Write-Host "Downloading the Windows PE Add-on..."
@@ -59,13 +69,23 @@ $InstallerPath = Join-Path $env:TEMP $file
 Write-Host "Windows PE Add-on Download Complete"
 Write-Host "Installing the Windows PE Add-on..."
 Start-Process $InstallerPath -Wait -ArgumentList "/features + /q" -Verb RunAs
+Remove-Item $InstallerPath -Force
 Write-Host "Windows PE Add-on Installed"
 ## WinPE Modifications to work with MDT
  # Add x86 support for the WinPE
 New-Item -ItemType Directory -Path "$env:ProgramFiles (x86)\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\x86\WinPE_OCs" | Out-Null
 Write-Host "Added x86 folder structure to the WinPE."
+## Download and install Microsoft Deployment Toolkit (MDT)
+Write-Host "Downloading Microsoft Deployment Toolkit (MDT)..."
+$dlLink = "https://download.microsoft.com/download/3/3/9/339BE62D-B4B8-4956-B58D-73C4685FC492/MicrosoftDeploymentToolkit_x64.msi" # Likely safe to hardcode as this will probably never be updated again
+$file = $dlLink -split "/" | Select-Object -Last 1
+$InstallerPath = Join-Path $env:TEMP $file
+(New-Object System.Net.WebClient).DownloadFile($dlLink, $InstallerPath)
+Write-Host "Installing Microsoft Deployment Toolkit (MDT)..."
+Start-Process msiexec.exe -Wait -ArgumentList "/i $InstallerPath /qn" -Verb RunAs
+Write-Host "MDT Installed successfully."
  # Add support for HTA applications
- $fileContents =
+$fileContents =
  '<?xml version="1.0" encoding="utf-8"?>
  <unattend xmlns="urn:schemas-microsoft-com:unattend">
      <settings pass="windowsPE">
@@ -91,11 +111,11 @@ Write-Host "Added x86 folder structure to the WinPE."
          </component>
      </settings>
  </unattend>'
- Set-Content -Path "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\Unattend_PE_x64.xml" -Value $fileContents 
+Set-Content -Path "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\Unattend_PE_x64.xml" -Value $fileContents 
 Write-Host "Added support for HTA applications to the WinPE."
 ## Patch the WinPE Media with the LCU for the appropriate Windows version
  # Mount the WinPE media
-$peWimFilePath = $"{env:ProgramFiles(x86)}\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\$locale\winpe.wim"
+$peWimFilePath = "${env:ProgramFiles(x86)}\Windows Kits\10\Assessment and Deployment Kit\Windows Preinstallation Environment\amd64\$locale\winpe.wim"
 $mountDir = "$env:SystemDrive\Mount"
 if (-not (Test-Path "$mountDir")) {
     Write-Host "Creating mount directory: $mountDir"
@@ -103,7 +123,7 @@ if (-not (Test-Path "$mountDir")) {
     Write-Host "Mount directory created."
 }
 Write-Host "Mounting the WinPE WIM file..."
-Mount-WindowsImage -ImagePath $peWimFilePath -Path $mountDir -Optimize
+Mount-WindowsImage -ImagePath $peWimFilePath -Path $mountDir -Optimize -Index 1
 Write-Host "WinPE mounted successfully."
  # Determine the needed update. Since the download page for Windows ADK only recently started to show this, prompt for input since this might not work in the future.
  # Get the download link for the latest update
@@ -128,22 +148,13 @@ $msuFilePath = Join-Path $env:TEMP $msuFile
 (New-Object System.Net.WebClient).DownloadFile($DownloadLink, $msuFilePath)
 Write-Host "Finished downloading the latest cumulative update for $LCU_OS."
 Write-Host "Applying the latest cumulative update to the Windows PE media. This will take some time..."
-Add-WindowsPackage -PackagePath $msuFilePath -Path $mountDir
+Add-WindowsPackage -PackagePath $msuFilePath -Path $mountDir | Out-Null
 Write-Host "Package added successfully."
 Remove-Item $msuFilePath -Force
 Write-Host "Cleaning up the image..."
-Repair-WindowsImage -Path $mountDir -StartComponentCleanup -ResetBase
+Dism /Image:$mountDir /Cleanup-Image /StartComponentCleanup /ResetBase
 Write-Host "Dismounting the WinPE WIM file..."
-Dismount-WindowsImage -Path $mountDir -Save
-## Download and install Microsoft Deployment Toolkit (MDT)
-Write-Host "Downloading Microsoft Deployment Toolkit (MDT)..."
-$dlLink = "https://download.microsoft.com/download/3/3/9/339BE62D-B4B8-4956-B58D-73C4685FC492/MicrosoftDeploymentToolkit_x64.msi" # Likely safe to hardcode as this will probably never be updated again
-$file = $dlLink -split "/" | Select-Object -Last 1
-$InstallerPath = Join-Path $env:TEMP $file
-(New-Object System.Net.WebClient).DownloadFile($dlLink, $InstallerPath)
-Write-Host "Installing Microsoft Deployment Toolkit (MDT)..."
-Start-Process msiexec.exe -Wait -ArgumentList "/i $InstallerPath /qn" -Verb RunAs
-Write-Host "MDT Installed successfully."
+Dismount-WindowsImage -Path $mountDir -Save | Out-Null
 ## Apply patch for MDT BIOS detection
 Write-Host "Downloading MDT firmware detection patch..."
 $dlLink = "https://download.microsoft.com/download/3/0/6/306AC1B2-59BE-43B8-8C65-E141EF287A5E/KB4564442/MDT_KB4564442.exe"
@@ -153,9 +164,9 @@ $InstallerPath = Join-Path $env:TEMP $file
 Write-Host "Applying MDT firmware patch..."
 $dumpFolder = Join-Path $env:TEMP "MDT_Patch"
 Start-Process $InstallerPath -Wait -ArgumentList "-q -extract:$dumpFolder"
-Move-Item -Path "$dumpFolder\x64\*" -Destination "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\Distribution\Tools\x64"
-Move-Item -Path "$dumpFolder\x86\*" -Destination "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\Distribution\Tools\x86"
-Remove-Item $dumpFolder -Force
+Move-Item -Path "$dumpFolder\x64\*" -Destination "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\Distribution\Tools\x64" -Force
+Move-Item -Path "$dumpFolder\x86\*" -Destination "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\Distribution\Tools\x86" -Force
+Remove-Item $dumpFolder -Force -Recurse
 Remove-Item $InstallerPath -Force
 Write-Host "Successfully applied MDT firmware patch."
 ## MDT Modifications
@@ -173,7 +184,7 @@ $outputPath = Join-Path $mdtScriptDir $file
 (New-Object System.Net.WebClient).DownloadFile($dlLink, $outputPath)
 Write-Host "Modified $file and applied fix for BitLocker for Windows Server 2022"
 # Adjust the default unattend.xml files for HideShell
-$xmlFiles = "Unattend_Core_x64.xml.10.0.xml", "Unattend_Core_x86.xml.10.0.xml", "Unattend_x64.xml.10.0.xml", "Unattend_x86.xml.10.0.xml"
+$xmlFiles = "Unattend_Core_x64.xml.10.0", "Unattend_Core_x86.xml.10.0", "Unattend_x64.xml.10.0", "Unattend_x86.xml.10.0"
 foreach ($xml in $xmlFiles) {
     $dlLink = "https://raw.githubusercontent.com/tylerlurie/Workbench/main/MDT%20Modifications/$xml"
     $file = $dlLink -split "/" | Select-Object -Last 1
@@ -194,13 +205,13 @@ If ($delayDomainJoin -eq "A") {
     $outputPath = Join-Path $mdtScriptDir $file
     (New-Object System.Net.WebClient).DownloadFile($dlLink, $outputPath)
     Write-Host "Added ZTIDomainJoinDelayed.wsf to the MDT Scripts path."
-    $xmlFiles = "Unattend_Core_x64.xml.10.0.xml", "Unattend_Core_x86.xml.10.0.xml", "Unattend_x64.xml.10.0.xml", "Unattend_x86.xml.10.0.xml"
-    foreach ($xml in $xmlFiles) {
-    [xml]$xml = Get-Content "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\$xml"
-    $components = $xml.unattend.settings | Where-Object { $_.pass -eq "specialize" } | Select-Object -ExpandProperty component
-    $componentToRemove = $components | Where-Object { $_.name -eq "Microsoft-Windows-UnattendedJoin" }
-    if ($null -ne $componentToRemove) { $componentToRemove.ParentNode.RemoveChild($componentToRemove) | Out-Null }
-    $xml.Save("$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\$xml")
+    $xmlFiles = "Unattend_Core_x64.xml.10.0", "Unattend_Core_x86.xml.10.0", "Unattend_x64.xml.10.0", "Unattend_x86.xml.10.0"
+    foreach ($file in $xmlFiles) {
+        [xml]$xmlContent = Get-Content "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\$file"
+        $components = $xmlContent.unattend.settings | Where-Object { $_.pass -eq "specialize" } | Select-Object -ExpandProperty component
+        $componentToRemove = $components | Where-Object { $_.name -eq "Microsoft-Windows-UnattendedJoin" }
+        if ($null -ne $componentToRemove) { $componentToRemove.ParentNode.RemoveChild($componentToRemove) | Out-Null }
+        $xmlContent.Save("$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\$file")
     }
     Write-Host "Modified the default unattend.xml files to delay domain joining until the end of the task sequence."
     $xmlFiles = @("Client.xml", "Server.xml")
@@ -243,31 +254,39 @@ If ($wantHighPerformance -eq "Y") {
     $templatePath = "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates"
     foreach ($xmlFileName in $xmlFiles) {
         $xmlFilePath = Join-Path -Path $templatePath -ChildPath $xmlFileName
-        $xml = [xml](Get-Content $xmlFile)
-        $highPerformanceCommand = "cmd /c powercfg.exe /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c"
-        $balancedPlanCommand = "cmd /c powercfg.exe /setactive 381b4222-f694-41f0-9685-ff5bb260df2e"
+        $xml = [xml](Get-Content $xmlFilePath)
+        $highPerformanceCommand = "cmd /c powercfg.exe /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c > `$null"
+        $balancedPlanCommand = "cmd /c powercfg.exe /setactive 381b4222-f694-41f0-9685-ff5bb260df2e > `$null"
+        
         function InsertStep($groupName, $stepName, $newStepName, $actionCommand) {
-            $targetStep = $xml.SelectNodes("//group[@name='$groupName']/step[@name='$stepName']")
-            $newNode = $xml.CreateElement("step")
-            $newNode.SetAttribute("type", "SMS_TaskSequence_RunCommandLineAction")
-            $newNode.SetAttribute("name", $newStepName)
-            $newNode.SetAttribute("description", "")
-            $newNode.SetAttribute("disable", "false")
-            $newNode.SetAttribute("continueOnError", "true")
-            $newNode.SetAttribute("startIn", "")
-            $newNode.SetAttribute("successCodeList", "0 3010")
-            $newNode.SetAttribute("runIn", "WinPEandFullOS")
-            $actionNode = $xml.CreateElement("action")
-            $actionNode.InnerText = $actionCommand
-            $newNode.AppendChild($actionNode)
-            $targetStep.ParentNode.InsertAfter($newNode, $targetStep)
+            $targetStep = $xml.SelectSingleNode("//group[@name='$groupName']/step[@name='$stepName']")
+            if ($null -ne $targetStep) {
+                $newNode = $xml.CreateElement("step")
+                $newNode.SetAttribute("type", "SMS_TaskSequence_RunCommandLineAction")
+                $newNode.SetAttribute("name", $newStepName)
+                $newNode.SetAttribute("description", "")
+                $newNode.SetAttribute("disable", "false")
+                $newNode.SetAttribute("continueOnError", "true")
+                $newNode.SetAttribute("startIn", "")
+                $newNode.SetAttribute("successCodeList", "0 3010")
+                $newNode.SetAttribute("runIn", "WinPEandFullOS")
+                $actionNode = $xml.CreateElement("action")
+                $actionNode.InnerText = $actionCommand
+                $newNode.AppendChild($actionNode)
+                $targetStep.ParentNode.InsertAfter($newNode, $targetStep)
+            } else {
+                Write-Host "Target step '$stepName' in group '$groupName' not found."
+            }
         }
-        InsertStep "Preinstall" "Gather local only" "Set High Performance Plan" $highPerformanceCommand
-        InsertStep "State Restore" "Gather local only" "Set High Performance Plan" $highPerformanceCommand
-        InsertStep "Capture Image" "Gather local only" "Set High Performance Plan" $highPerformanceCommand
-        InsertStep "State Restore" "Enable BitLocker" "Set Balanced Plan" $balancedPlanCommand
-        $xml.Save($xmlFile)
+        
+        InsertStep "Preinstall" "Gather local only" "Set High Performance Plan" $highPerformanceCommand | Out-Null
+        InsertStep "State Restore" "Gather local only" "Set High Performance Plan" $highPerformanceCommand | Out-Null
+        InsertStep "Capture Image" "Gather local only" "Set High Performance Plan" $highPerformanceCommand | Out-Null
+        InsertStep "State Restore" "Enable BitLocker" "Set Balanced Plan" $balancedPlanCommand | Out-Null
+        
+        $xml.Save($xmlFilePath)
     }
+    
     Write-Host "Successfully added High Performance Power Plan steps into default task sequences."
 }
 # Fix the generating of Windows Catalog files:
@@ -316,6 +335,31 @@ New-Item -ItemType Directory -Path $deploySharePath
 # Share the directories with hidden shares and set full access permissions
 New-SmbShare -Name "BuildShare$" -Path $buildSharePath -FullAccess "$netBIOSDomainName\$mdtAdmins", "$netBIOSDomainName\$buildSA"
 New-SmbShare -Name "DeployShare$" -Path $deploySharePath -FullAccess "$netBIOSDomainName\$mdtAdmins", "$netBIOSDomainName\$mdtUsers"
+$buildLogsPath = Join-Path -Path $buildSharePath -ChildPath "Logs"
+$buildCapturesPath = Join-Path -Path $buildSharePath -ChildPath "Captures"
+$deployLogsPath = Join-Path -Path $deploySharePath -ChildPath "Logs"
+New-Item -ItemType Directory -Path $buildLogsPath -Force
+New-Item -ItemType Directory -Path $deployLogsPath -Force
+# Set NTFS permissions
+# For Deploy Share, give MDT Users Read & Execute at the root, but Modify on the Logs folder
+$aclDeploy = Get-Acl -Path $deploySharePath
+$aclDeploy.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("$netBIOSDomainName\MDT Users","ReadAndExecute","ContainerInherit,ObjectInherit","None","Allow")))
+Set-Acl -Path $deploySharePath -AclObject $aclDeploy
+$aclDeployLogs = Get-Acl -Path $deployLogsPath
+$aclDeployLogs.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule("$netBIOSDomainName\MDT Users","Modify","ContainerInherit,ObjectInherit","None","Allow")))
+Set-Acl -Path $deployLogsPath -AclObject $aclDeployLogs
+# For Build Share, give MDT Build Account Read & Execute at the root, but Modify on the Logs and Captures folders
+$aclBuild = Get-Acl -Path $buildSharePath
+$aclBuild.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($buildSA,"ReadAndExecute","ContainerInherit,ObjectInherit","None","Allow")))
+Set-Acl -Path $buildSharePath -AclObject $aclBuild
+$aclBuildLogs = Get-Acl -Path $buildLogsPath
+$aclBuildLogs.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($buildSA,"Modify","ContainerInherit,ObjectInherit","None","Allow")))
+Set-Acl -Path $buildLogsPath -AclObject $aclBuildLogs
+$aclBuildCaptures = Get-Acl -Path $buildCapturesPath
+$aclBuildCaptures.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($buildSA,"Modify","ContainerInherit,ObjectInherit","None","Allow")))
+Set-Acl -Path $buildCapturesPath -AclObject $aclBuildCaptures
+
+
 New-PSDrive -Name "DS001" -PSProvider "MDTProvider" -Root "$MdtBuildShare" -Description "MDT Build Share" -NetworkPath "\\$env:ComputerName\BuildShare`$" | Add-MDTPersistentDrive | Out-Null
 New-Item -Path "DS001:\Operating Systems\Windows $windowsVersion $windowsRelease" -ItemType Directory | Out-Null
 Write-Host "Creating WinPE Selection Profile..."
@@ -325,6 +369,21 @@ Write-Host "Creating the Build Task Sequence..."
 Import-MDTOperatingSystem -Path "DS001:\Operating Systems\Windows $windowsVersion $windowsRelease" -SourcePath "$env:TEMP\$isoExtractDir" -DestinationFolder "$windowsVersion $windowsRelease $windowsEdition" | Out-Null
 Import-MdtTaskSequence -Path "DS001:\Task Sequences" -Name "Build a Windows $windowsVersion $windowsRelease Reference Image" -Template "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\Client.xml"
 Write-Host "Build Task Sequence created successfully."
+Write-Host "Adjusting Bootstrap.ini..."
+$bootstrapContent = 
+'
+[Settings]
+Priority=Default
+
+[Default]
+DeployRoot=\\' + $env:COMPUTERNAME + '\DeploymentShare$
+KeyboardLocalePE=' + $locale + '
+UserID=' + $buildSA + '
+UserDomain=' + $adDomain + '
+UserPassword=' + $buildSAPassword + '
+SkipBDDWelcome=YES
+'
+Out-File -FilePath "$buildSharePath\Control\Bootstrap.ini" -Encoding utf8 -InputObject $bootstrapContent -Force
 Write-Host "Adjusting CustomSettings.ini..."
 $customSettingsContent =
 '[Settings]
@@ -363,7 +422,7 @@ SkipTimeZone=YES
 SkipSummary=YES
 SkipFinalSummary=YES
 FinishAction=SHUTDOWN
-WSUSServer=http://' + $wsusServer + ':8530
+WSUSServer=http' + $wsusSSL[0] + '://' + $wsusServer + ':' + $wsusSSL[1] + '
 SLShare=\\' + $env:COMPUTERNAME + '\BuildShare$\Logs
 EventService=http://' + $env:COMPUTERNAME + ':9800
 DoCapture=YES
@@ -378,6 +437,9 @@ Write-Host "Removing support for x86..."
 $XMLContent = Get-Content "$buildSharePath\Control\Settings.xml"
 $XMLContent = $XMLContent -Replace '<SupportX86>True</SupportX86>','<SupportX86>False</SupportX86>'
 $XMLContent | Out-File "$buildSharePath\Control\Settings.xml"
+## Update Deploy share to generate boot media
+Write-Host "Updating Build share and generating boot media"
+Update-MDTDeploymentShare -path "DS001:" -Force | Out-Null
 Write-Host "Done creating build share."
 ## Deploy Share:
 New-PSDrive -Name "DS002" -PSProvider "MDTProvider" -Root "$MdtBuildShare" -Description "MDT Deploy Share" -NetworkPath "\\$env:ComputerName\DeployShare`$" | Add-MDTPersistentDrive | Out-Null
@@ -385,7 +447,8 @@ New-Item -Path "DS002:\Operating Systems\Windows $windowsVersion $windowsRelease
 Write-Host "Creating WinPE Selection Profile..."
 New-Item -Path "DS002:\Packages\WinPE" -ItemType Directory | Out-Null
 New-Item -Path "DS002:\Selection Profiles" -enable "True" -Name "WinPE" -Comments "" -Definition "<SelectionProfile><Include path=`"Packages\WinPE`" /></SelectionProfile>" -ReadOnly "False" | Out-Null
-Write-Host "Creating the Build Task Sequence..."
+Write-Host "Creating the Deploy Task Sequence..."
+Import-MDTOperatingSystem -Path "DS002:\Operating Systems\Windows $windowsVersion $windowsRelease" -SourcePath "$env:TEMP\$isoExtractDir" -DestinationFolder "$windowsVersion $windowsRelease $windowsEdition" | Out-Null
 Import-MdtTaskSequence -Path "DS002:\Task Sequences" -Name "Build a Windows $windowsVersion $windowsRelease Reference Image" -Template "$env:ProgramFiles\Microsoft Deployment Toolkit\Templates\Client.xml" -Comments "" -ID "W$windowsVersion-$windowsRelease-B" -Version "1.0" -OperatingSystemPath "DS001\Operating Systems\Windows $windowsVersion $windowsRelease"
 Write-Host "Build Task Sequence created successfully."
 Write-Host "Adjusting CustomSettings.ini..."
@@ -395,7 +458,7 @@ Priority=Default, TaskSequenceID
 Properties=MyCustomProperty
 
 [Default]
-_SMSTSORGNAME=Organization
+_SMSTSORGNAME=' + $companyName + '
 _SMSTSPackageName=%TaskSequenceName%
 ; Comment this in with valid TSID to skip the Task Sequence selection screen
 ;TaskSequenceID=OS-XXXX-B
@@ -426,19 +489,35 @@ SkipTimeZone=YES
 SkipSummary=YES
 SkipFinalSummary=YES
 FinishAction=SHUTDOWN
-WSUSServer=http://' + $wsusServer + ':8530
+WSUSServer=http' + $wsusSSL[0] + '://' + $wsusServer + ':' + $wsusSSL[1] + '
 SLShare=\\' + $env:COMPUTERNAME + '\BuildShare$\Logs
 EventService=http://' + $env:COMPUTERNAME + ':9800
-DoCapture=YES
-ComputerBackupLocation=\\' + $env:COMPUTERNAME + '\BuildShare$\Captures
-BackupFile=install-#year(date) & "-" & month(date) & "-" & day(date) & "-" & hour(time) & "-" & minute(time)#.wim
-HideShell=NO'
+DriverGroup001=%Make%\%Model%
+JoinDomain=' + $adDomain + '
+DomainAdmin=' + $domainJoinSA + '
+DomainAdminPassword=' + $domainJoinSAPassword + '
+DomainAdminDomain=' + $adDomain + '
+MachineObjectOU=' + $pcObjectOU + '
+HideShell=YES
+'
+if ($wantRandomPCNames -eq $true) { $customSettingsContent +=
+'ComputerName=' + $pcPrefix + '-#right("%UUID%",7)#
+'
+}
 # Remove the line for WSUS server if one wasn't supplied:
 If ($wsusServer -eq '') { $customSettingsContent = $customSettingsContent.Replace('WSUSServer=http://' + $wsusServer + ':8530' + "`n", "") }
-Out-File -FilePath "$buildSharePath\Control\Settings.xml" -Encoding utf8 -InputObject $customSettingsContent -Force
+Out-File -FilePath "$deploySharePath\Control\Settings.xml" -Encoding utf8 -InputObject $customSettingsContent -Force
 ## Change MDT config to disable x86 support for boot media
 Write-Host "Removing support for x86..."
-$XMLContent = Get-Content "$buildSharePath\Control\Settings.xml"
+$XMLContent = Get-Content "$deploySharePath\Control\Settings.xml"
 $XMLContent = $XMLContent -Replace '<SupportX86>True</SupportX86>','<SupportX86>False</SupportX86>'
-$XMLContent | Out-File "$buildSharePath\Control\Settings.xml"
-Write-Host "Done creating build share."
+$XMLContent | Out-File "$deploySharePath\Control\Settings.xml"
+# Drivers
+New-Item -Path "DS002:\Out-of-Box Drivers\WinPE" -ItemType Directory | Out-Null
+# Selection Profiles
+New-Item -Path "DS002:\Selection Profiles" -enable "True" -Name "WinPE" -Comments "" -Definition "<SelectionProfile><Include path=`"Out-of-Box Drivers\WinPE`" /></SelectionProfile>" -ReadOnly "False" | Out-Null
+Write-Host "Done creating deploy share."
+## Update Deploy share to generate boot media
+Write-Host "Updating Deploy share and generating boot media"
+Update-MDTDeploymentShare -path "DS002:" -Force | Out-Null
+Write-Host -ForegroundColor Green "Script execution complete."
